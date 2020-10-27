@@ -1,0 +1,52 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: wmi-script
+  namespace: monitoring
+data:
+  entrypoint.ps1: |
+    Write-Host "Installing Windows Exporter on host $env:HOST_IP..."
+    mkdir C:\temp_ssh
+    cp C:\ssh\id_rsa C:\temp_ssh\id_rsa
+    cp C:\ssh\id_rsa.pub C:\temp_ssh\id_rsa.pub
+    Cmd /c Icacls C:\temp_ssh\id_rsa /c /t /Inheritance:d
+    Cmd /c Icacls "C:\temp_ssh\id_rsa" /c /t /Grant ContainerAdministrator:F
+    Cmd /c Icacls "C:\temp_ssh\id_rsa" /c /t /Remove Administrator "Authenticated Users" BUILTIN\Administrators BUILTIN Everyone System Users
+    Cmd /c Icacls "C:\temp_ssh\id_rsa"
+    
+    Get-Service -Name ssh-agent | Set-Service -StartupType Manual
+    Start-Service ssh-agent
+
+    ssh-keygen  -p -P $env:SSH_PASSPHRASE --% -N "" -f C:\temp_ssh\id_rsa
+    ssh-add "C:\temp_ssh\id_rsa"
+    Write-Host "Transferring wmi.ps1 to $env:HOST_IP"
+    scp -o "StrictHostKeyChecking no" -i "C:\temp_ssh\id_rsa" C:\scripts\wmi.ps1 azureuser@${env:HOST_IP}:wmi.ps1
+    ssh -o "StrictHostKeyChecking no" -i "C:\temp_ssh\id_rsa" azureuser@$env:HOST_IP powershell -command '.\wmi.ps1'
+    Write-Host "wmi on host $env:HOST_IP installed"
+    Wait-Event
+
+  wmi.ps1: |
+    $software = "windows_exporter"
+    $version=$env:VERSION
+    $url = "https://github.com/prometheus-community/windows_exporter/releases/download/v$version/windows_exporter-$version-amd64.msi"
+    $installed = (Get-ItemProperty HKLM:\Software\Microsoft\Windows\CurrentVersion\Uninstall\* | where { $_.DisplayName -eq "$software" }) -ne $null
+    $output = "C:\temp\wmi.msi"
+
+    If(-Not $installed) {
+      if(!(Test-Path -path "C:\temp")) {
+        mkdir "C:\temp"
+      }
+      $wc = New-Object System.Net.WebClient
+      $wc.DownloadFile("$url", "$output")
+
+      Start-Process msiexec.exe -Wait -ArgumentList "/I $output /quiet"
+      Write-Host "done!"
+    } Else {
+      Write-Host "$software already exists."
+    }
+
+  port-forwarding.ps1: |
+    netsh interface portproxy add v4tov4 listenport=9100 connectport=9182 connectaddress=$env:HOST_IP protocol=tcp
+    Write-Host "port forward $env:HOST_IP 9182"
+    Wait-Event
+  

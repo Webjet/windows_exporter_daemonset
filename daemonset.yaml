@@ -1,0 +1,86 @@
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  labels:
+    app: windows-node-exporter
+  name: windows-node-exporter
+  namespace: monitoring
+spec:
+  revisionHistoryLimit: 10
+  selector:
+    matchLabels:
+      app: windows-node-exporter
+  template:
+    metadata:
+      labels:
+        app: windows-node-exporter
+    spec:
+      containers:
+      - args:
+        - C:\\scripts\\entrypoint.ps1
+        command:
+        - powershell
+        env:
+        - name: VERSION
+          value: 0.14.0
+        - name: HOST_IP
+          valueFrom:
+            fieldRef:
+              apiVersion: v1
+              fieldPath: status.hostIP
+        - name: SSH_PASSPHRASE
+          valueFrom:
+            secretKeyRef:
+              key: SSH_PASSPHRASE
+              name: wmi-secret
+        image: mcr.microsoft.com/windows/servercore:ltsc2019
+        imagePullPolicy: IfNotPresent
+        name: wmiinstaller
+        resources:
+          limits:
+            cpu: "1"
+            memory: 500Mi
+        volumeMounts:
+        - mountPath: C:\ssh\
+          name: ssh-volume
+        - mountPath: /scripts
+          name: script-mount
+      - args:
+        - C:\\scripts\\port-forwarding.ps1
+        command:
+        - powershell
+        env:
+        - name: HOST_IP
+          valueFrom:
+            fieldRef:
+              fieldPath: status.hostIP
+        image: mcr.microsoft.com/windows/servercore:ltsc2019
+        name: node-exporter-proxy
+        ports:
+        - containerPort: 9100
+          hostPort: 9100
+          name: https
+        resources:
+          limits:
+            cpu: "1"
+            memory: 500Mi
+        volumeMounts:
+        - mountPath: /scripts
+          name: script-mount
+      nodeSelector:
+        beta.kubernetes.io/os: windows
+      terminationGracePeriodSeconds: 30
+      tolerations:
+      - effect: NoSchedule
+        key: dedicated
+        operator: Equal
+        value: app
+      volumes:
+      - name: ssh-volume
+        secret:
+          defaultMode: 511
+          secretName: host-ssh
+      - configMap:
+          defaultMode: 420
+          name: wmi-script
+        name: script-mount
